@@ -104,9 +104,10 @@
     left: 16px;
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: 6px;
     pointer-events: none;
-    z-index: 11;
+    z-index: 16;
   }
 
   .pu-badge {
@@ -122,6 +123,21 @@
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
     border: 1px solid rgba(255, 255, 255, 0.2);
     backdrop-filter: blur(4px);
+    transition: padding 0.15s ease, transform 0.1s ease;
+  }
+
+  .pu-badge.compact {
+    padding: 4px 8px;
+    font-size: 11px;
+    gap: 5px;
+    pointer-events: auto;
+    cursor: pointer;
+    opacity: 0.92;
+  }
+
+  .pu-badge.compact:hover {
+    opacity: 1;
+    transform: scale(1.04);
   }
 
   .pu-badge.shield {
@@ -145,6 +161,11 @@
     padding: 2px 6px;
     border-radius: 4px;
     color: #ffffff;
+  }
+
+  .pu-badge.compact .pu-timer {
+    padding: 1px 5px;
+    font-size: 12px;
   }
 
   /* Boss Health Bar */
@@ -580,25 +601,36 @@
   let nukeFlash = 0;
 
   // Stackable Power-Up States (All can run simultaneously!)
-  // Multi-shot bolts cap at 16 bolts (stacks capped at 3 -> 2 * 2^3 = 16), while timer keeps doubling without cap!
+  // When timer > 100s, badge collapses into compact mode showing '∞' until clicked to peek for 5 seconds
   const activePowerUps = {
-    invuln: { timer: 0, stacks: 0 },
-    speed:  { timer: 0, stacks: 0 }, // 2^stacks speed multiplier (2x, 4x, 8x...)
-    multi:  { timer: 0, stacks: 0 }  // 2 * 2^stacks bolts per shot, capped at 16 bolts (stacks <= 3)
+    invuln: { timer: 0, stacks: 0, revealTimer: 0 },
+    speed:  { timer: 0, stacks: 0, revealTimer: 0 }, // 2^stacks speed multiplier (2x, 4x, 8x...)
+    multi:  { timer: 0, stacks: 0, revealTimer: 0 }  // 2 * 2^stacks bolts per shot, capped at 16 bolts (stacks <= 3)
   };
 
   function resetPowerUps() {
-    activePowerUps.invuln = { timer: 0, stacks: 0 };
-    activePowerUps.speed = { timer: 0, stacks: 0 };
-    activePowerUps.multi = { timer: 0, stacks: 0 };
-    updatePowerUpsHUD();
+    activePowerUps.invuln = { timer: 0, stacks: 0, revealTimer: 0 };
+    activePowerUps.speed = { timer: 0, stacks: 0, revealTimer: 0 };
+    activePowerUps.multi = { timer: 0, stacks: 0, revealTimer: 0 };
+    updatePowerUpsHUD(true);
   }
+
+  // Click handler on compact infinity badges to reveal exact seconds for 5s
+  powerupsHud.addEventListener('pointerdown', (e) => {
+    const badge = e.target.closest('.pu-badge');
+    if (!badge) return;
+    e.stopPropagation();
+    const type = badge.dataset.type;
+    if (type && activePowerUps[type] && activePowerUps[type].timer > 100) {
+      activePowerUps[type].revealTimer = 5.0;
+      updatePowerUpsHUD(true);
+    }
+  });
 
   function triggerNuke(x, y) {
     nukeFlash = 0.65;
     screenShake = 0.7;
 
-    // Wipe all regular enemies on the board
     let wipedCount = enemies.length;
     for (const e of enemies) {
       score += e.points;
@@ -606,11 +638,8 @@
       createExplosion(e.x, e.y, '#fbbf24', 10);
     }
     enemies = [];
-
-    // Clear active enemy projectiles on screen
     enemyBullets = [];
 
-    // If a boss is present, deal heavy tactical blast damage without bypassing the boss fight entirely
     if (boss) {
       const bossBlastDamage = Math.max(15, Math.ceil(boss.maxHp * 0.25));
       boss.hp = Math.max(0, boss.hp - bossBlastDamage);
@@ -642,34 +671,33 @@
 
     const state = activePowerUps[type];
     if (state.timer > 0) {
-      // Timer doubles uncapped!
       state.timer = state.timer * 2;
       if (type === 'multi') {
-        // Cap multi-shot at 16 bolts (2 * 2^3 = 16 -> max stacks = 3)
         state.stacks = Math.min(3, state.stacks + 1);
       } else {
         state.stacks = Math.min(5, state.stacks + 1);
       }
     } else {
-      // Fresh activation: starts at 5 seconds
       state.timer = 5.0;
       state.stacks = 1;
+      state.revealTimer = 0;
     }
 
+    const timeText = state.timer > 100 ? '∞' : `${state.timer.toFixed(0)}s`;
     let label = '';
     let color = '#38bdf8';
     if (type === 'invuln') {
       color = '#38bdf8';
-      label = `SHIELD ${state.timer.toFixed(0)}s!`;
+      label = `SHIELD ${timeText}!`;
     } else if (type === 'speed') {
       color = '#facc15';
       const mult = Math.pow(2, state.stacks);
-      label = `${mult}X SPEED (${state.timer.toFixed(0)}s)!`;
+      label = `${mult}X SPEED (${timeText})!`;
     } else if (type === 'multi') {
       color = '#c084fc';
       const bolts = Math.min(16, 2 * Math.pow(2, state.stacks));
       const capTag = bolts >= 16 ? ' MAX' : '';
-      label = `${bolts}X SHOT${capTag} (${state.timer.toFixed(0)}s)!`;
+      label = `${bolts}X SHOT${capTag} (${timeText})!`;
     }
 
     floatingTexts.push({
@@ -681,24 +709,63 @@
     });
 
     createExplosion(x, y, color, 14);
-    updatePowerUpsHUD();
+    updatePowerUpsHUD(true);
   }
 
-  function updatePowerUpsHUD() {
+  let lastHudSignature = '';
+  function updatePowerUpsHUD(force = false) {
+    const configs = [
+      {
+        key: 'invuln',
+        cls: 'shield',
+        icon: '&#128737;',
+        fullLabel: 'INVULNERABLE',
+        shortLabel: ''
+      },
+      {
+        key: 'speed',
+        cls: 'speed',
+        icon: '&#9889;',
+        fullLabel: `${Math.pow(2, activePowerUps.speed.stacks)}X FIRE SPEED`,
+        shortLabel: `${Math.pow(2, activePowerUps.speed.stacks)}X`
+      },
+      {
+        key: 'multi',
+        cls: 'multi',
+        icon: '&#128640;',
+        fullLabel: (() => {
+          const bolts = Math.min(16, 2 * Math.pow(2, activePowerUps.multi.stacks));
+          return `${bolts}-BOLT SHOT${bolts >= 16 ? ' (MAX)' : ''}`;
+        })(),
+        shortLabel: `${Math.min(16, 2 * Math.pow(2, activePowerUps.multi.stacks))}X`
+      }
+    ];
+
     let html = '';
-    if (activePowerUps.invuln.timer > 0) {
-      html += `<div class="pu-badge shield"><span>&#128737; INVULNERABLE</span><span class="pu-timer">${activePowerUps.invuln.timer.toFixed(1)}s</span></div>`;
+    let signature = '';
+
+    for (const cfg of configs) {
+      const pu = activePowerUps[cfg.key];
+      if (pu.timer <= 0) continue;
+
+      const isOver100 = pu.timer > 100;
+      const isExpanded = !isOver100 || pu.revealTimer > 0;
+      const compactClass = isExpanded ? '' : ' compact';
+      const labelText = isExpanded ? cfg.fullLabel : cfg.shortLabel;
+      const timerDisplay = isExpanded ? `${pu.timer.toFixed(1)}s` : '&infin;';
+
+      signature += `${cfg.key}:${isExpanded}:${labelText}:${timerDisplay}|`;
+
+      html += `<div class="pu-badge ${cfg.cls}${compactClass}" data-type="${cfg.key}" title="${isOver100 && !isExpanded ? 'Click to view exact seconds' : ''}">` +
+              `<span>${cfg.icon}${labelText ? ' ' + labelText : ''}</span>` +
+              `<span class="pu-timer">${timerDisplay}</span>` +
+              `</div>`;
     }
-    if (activePowerUps.speed.timer > 0) {
-      const mult = Math.pow(2, activePowerUps.speed.stacks);
-      html += `<div class="pu-badge speed"><span>&#9889; ${mult}X FIRE SPEED</span><span class="pu-timer">${activePowerUps.speed.timer.toFixed(1)}s</span></div>`;
+
+    if (force || signature !== lastHudSignature) {
+      lastHudSignature = signature;
+      powerupsHud.innerHTML = html;
     }
-    if (activePowerUps.multi.timer > 0) {
-      const bolts = Math.min(16, 2 * Math.pow(2, activePowerUps.multi.stacks));
-      const maxLabel = bolts >= 16 ? ' (MAX)' : '';
-      html += `<div class="pu-badge multi"><span>&#128640; ${bolts}-BOLT SHOT${maxLabel}</span><span class="pu-timer">${activePowerUps.multi.timer.toFixed(1)}s</span></div>`;
-    }
-    powerupsHud.innerHTML = html;
   }
 
   // Player Rocket Object
@@ -725,10 +792,8 @@
 
   // Spawn Falling Power-Up Capsule
   function maybeSpawnPowerUp(x, y, guaranteed = false) {
-    // Halved drop rate from 36% down to 18% per enemy kill
     if (!guaranteed && Math.random() > 0.18) return;
 
-    // Weighted selection: Nuke is much rarer (~10% of drops), while standard abilities share the remaining 90%
     const roll = Math.random();
     let type = 'invuln';
     if (roll < 0.10) {
@@ -794,7 +859,6 @@
 
     // Swept Crimson Side Fins
     ctx.fillStyle = '#e11d48';
-    // Left Fin
     ctx.beginPath();
     ctx.moveTo(-w * 0.24, h * 0.08);
     ctx.lineTo(-w * 0.52, h * 0.38);
@@ -802,7 +866,6 @@
     ctx.closePath();
     ctx.fill();
 
-    // Right Fin
     ctx.beginPath();
     ctx.moveTo(w * 0.24, h * 0.08);
     ctx.lineTo(w * 0.52, h * 0.38);
@@ -816,7 +879,7 @@
     ctx.roundRect(-10, h * 0.3, 20, 7, 2);
     ctx.fill();
 
-    // Main Rocket Fuselage (Metallic White/Silver Gradient)
+    // Main Rocket Fuselage
     const bodyGrad = ctx.createLinearGradient(-w * 0.28, 0, w * 0.28, 0);
     bodyGrad.addColorStop(0, '#cbd5e1');
     bodyGrad.addColorStop(0.45, '#ffffff');
@@ -920,6 +983,19 @@
     }
   }
 
+  // Calculate Enemy Health Scaling:
+  // Rounds 1-10: gentle scaling (+1 base HP at round 6)
+  // After Round 10: increases aggressively by 5% compounding every round!
+  function getEnemyHealthMultiplier(lvl) {
+    if (lvl <= 10) {
+      // Very gentle increase across the first 10 rounds (~1.5% per round)
+      return 1 + (lvl - 1) * 0.015;
+    }
+    // Gentle baseline at round 10, then +5% compounding per round from round 11 onward
+    const round10Mult = 1 + 9 * 0.015; // 1.135
+    return round10Mult * Math.pow(1.05, lvl - 10);
+  }
+
   function spawnEnemySquadron(lvl) {
     const rows = Math.min(5, 2 + Math.floor((lvl + 1) / 2));
     const cols = Math.min(8, 5 + Math.floor(lvl / 3));
@@ -928,21 +1004,26 @@
     const startX = (width - (cols - 1) * spacingX) / 2;
     const startY = 95;
 
-    const enemyBaseHp = 1 + Math.floor(lvl / 4);
+    const healthMult = getEnemyHealthMultiplier(lvl);
+    // Slight step-up at round 6 so rounds 1-10 feel lightly progressive without spiking
+    const earlyBonus = lvl >= 6 ? 0.5 : 0;
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         let type = 'drone';
-        let hp = enemyBaseHp;
+        let baseHp = 1 + earlyBonus;
         let points = 100;
         if (r === 0) {
           type = 'commander';
-          hp = enemyBaseHp + 1;
+          baseHp = 2 + earlyBonus;
           points = 250;
         } else if (r === 1) {
           type = 'striker';
+          baseHp = 1.35 + earlyBonus;
           points = 150;
         }
+
+        const hp = Math.max(1, Math.round(baseHp * healthMult));
 
         enemies.push({
           homeX: startX + c * spacingX,
@@ -969,7 +1050,10 @@
 
   function spawnBoss(lvl) {
     const bossTier = lvl / 5;
-    const maxHp = 45 + (bossTier - 1) * 40;
+    const healthMult = getEnemyHealthMultiplier(lvl);
+    const baseBossHp = 45 + (bossTier - 1) * 35;
+    const maxHp = Math.round(baseBossHp * healthMult);
+
     const bossTitles = [
       'CRIMSON INTERCEPTOR',
       'VOID DREADNOUGHT',
@@ -1090,7 +1174,7 @@
   // Fire Player Bolts (2 bolts normally, scaling up to a strict cap of 16 bolts)
   function fireTwinSpurt() {
     const multiStacks = activePowerUps.multi.timer > 0 ? Math.min(3, activePowerUps.multi.stacks) : 0;
-    const boltCount = Math.min(16, 2 * Math.pow(2, multiStacks)); // 2 -> 4 -> 8 -> 16 (capped at 16)
+    const boltCount = Math.min(16, 2 * Math.pow(2, multiStacks));
     const color = multiStacks > 0 ? '#c084fc' : '#38bdf8';
 
     if (boltCount === 2) {
@@ -1144,21 +1228,25 @@
       }
     }
 
-    // Update Active Power-Up Timers
-    let hudDirty = false;
+    // Update Active Power-Up Timers & Peek Reveal Timers
+    let anyActive = false;
     for (const key of ['invuln', 'speed', 'multi']) {
       const pu = activePowerUps[key];
       if (pu.timer > 0) {
+        anyActive = true;
         pu.timer -= dt;
-        hudDirty = true;
+        if (pu.revealTimer > 0) {
+          pu.revealTimer = Math.max(0, pu.revealTimer - dt);
+        }
         if (pu.timer <= 0) {
           pu.timer = 0;
           pu.stacks = 0;
+          pu.revealTimer = 0;
         }
       }
     }
-    if (hudDirty) {
-      updatePowerUpsHUD();
+    if (anyActive || lastHudSignature !== '') {
+      updatePowerUpsHUD(false);
     }
 
     // Player Movement (Left/Right)
@@ -1215,7 +1303,6 @@
       drop.y += drop.vy * dt;
       drop.pulse += dt * 7;
 
-      // Check Pickup by Player Rocket
       if (Math.abs(drop.x - player.x) < 34 && Math.abs(drop.y - player.y) < 38) {
         applyPowerUp(drop.type, drop.x, drop.y);
         powerUpDrops.splice(i, 1);
@@ -1480,7 +1567,6 @@
 
     const r = drop.radius + Math.sin(drop.pulse) * 1.8;
 
-    // Outer Halo
     ctx.fillStyle = mainColor;
     ctx.globalAlpha = drop.type === 'nuke' ? 0.38 : 0.25;
     ctx.beginPath();
@@ -1488,7 +1574,6 @@
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    // Capsule Orb
     ctx.fillStyle = drop.type === 'nuke' ? '#431407' : '#0f172a';
     ctx.strokeStyle = mainColor;
     ctx.lineWidth = drop.type === 'nuke' ? 3 : 2.5;
@@ -1497,7 +1582,6 @@
     ctx.fill();
     ctx.stroke();
 
-    // Icon Text
     ctx.fillStyle = drop.type === 'nuke' ? '#fed7aa' : mainColor;
     ctx.font = drop.type === 'nuke' ? '900 9px "Segoe UI", sans-serif' : '900 11px "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
